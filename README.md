@@ -25,8 +25,8 @@ on the database on the world thread.
 ## Command
 
 `.temucraft guildchat <guild name or id> [lines]` (20 lines by default, at most 200) shows a guild's stored chat,
-officer lines included. RBAC permission 104201, linked to the administrator roles 192 and 1014; give it to others
-with `.rbac account grant <account> 104201`.
+officer lines included. RBAC permission 104251, linked to the administrator roles 192 and 1014; give it to others
+with `.rbac account grant <account> 104251`.
 
 ## Install
 

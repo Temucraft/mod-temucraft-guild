@@ -33,7 +33,7 @@
  * Ages are seconds before now (the client's clock may be off). A record longer than one message goes as "+piece"
  * messages and a last "=piece".
  *
- * GM command: .temucraft guildchat <guild name or id> [lines] (RBAC 104201) shows a guild's stored chat, officer
+ * GM command: .temucraft guildchat <guild name or id> [lines] (RBAC 104251) shows a guild's stored chat, officer
  * lines included.
  *
  * Nothing here blocks the world thread: inserts are asynchronous Executes, reads are asynchronous queries answered
@@ -592,7 +592,7 @@ public:
     {
         static ChatCommandTable root =
         {
-            { "temucraft guildchat", HandleGuildChat, 104201, Console::No },
+            { "temucraft guildchat", HandleGuildChat, 104251, Console::No },
         };
         return root;
     }
