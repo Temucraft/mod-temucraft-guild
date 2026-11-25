@@ -1,0 +1,60 @@
+[worldserver]
+
+########################################
+# mod-temucraft-guild
+########################################
+#
+#    Temucraft.Guild.ChatHistory.Enable
+#        Description: Keep every guild and officer chat line (characters DB, mod_temucraft_guild_chat, forever) and
+#                     send it to the Temucraft guild window.
+#        Default:     1
+
+Temucraft.Guild.ChatHistory.Enable = 1
+
+#
+#    Temucraft.Guild.ChatHistory.LoginLines
+#        Description: How many of the last lines a member gets after logging in (shown in the chat window unless the
+#                     player switches that off under /tui). 0 = none, at most 50.
+#        Default:     10
+
+Temucraft.Guild.ChatHistory.LoginLines = 10
+
+#
+#    Temucraft.Guild.ChatHistory.PageSize
+#        Description: Lines (and log entries, news) per page the guild window and guild bank ask for (5-200).
+#        Default:     50
+
+Temucraft.Guild.ChatHistory.PageSize = 50
+
+#
+#    Temucraft.Guild.BankLogArchive.Enable
+#        Description: Copy every guild bank log entry and guild event log entry into mod_temucraft_guild_bank_log
+#                     and mod_temucraft_guild_event_log (forever; the core keeps the last 25 per tab), and show them
+#                     in the guild bank's Log / Money Log and the guild window's Info tab.
+#        Default:     1
+
+Temucraft.Guild.BankLogArchive.Enable = 1
+
+#
+#    Temucraft.Guild.News.Enable
+#        Description: Guild news (the guild window's News tab): achievements, epic items, members joining and
+#                     leaving, promotions.
+#        Default:     1
+
+Temucraft.Guild.News.Enable = 1
+
+#
+#    Temucraft.Guild.News.Achievements
+#    Temucraft.Guild.News.Items
+#        Description: Whether achievements / looted and made items are news.
+#        Default:     1
+
+Temucraft.Guild.News.Achievements = 1
+Temucraft.Guild.News.Items = 1
+
+#
+#    Temucraft.Guild.News.MinItemQuality
+#        Description: Lowest item quality that is news (3 rare, 4 epic, 5 legendary; heirlooms never).
+#        Default:     4
+
+Temucraft.Guild.News.MinItemQuality = 4
