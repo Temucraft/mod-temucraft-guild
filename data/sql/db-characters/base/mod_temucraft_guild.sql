@@ -1,4 +1,4 @@
--- mod-temucraft-guild: guild chat, guild bank log, guild event log and guild news, kept forever.
+-- mod-temucraft-guild: guild chat, guild bank log, guild event log and guild news (kept Temucraft.Guild.KeepDays.* days).
 
 -- every guild (channel 0) and officer (channel 1) chat line
 CREATE TABLE IF NOT EXISTS `mod_temucraft_guild_chat` (
@@ -11,7 +11,6 @@ CREATE TABLE IF NOT EXISTS `mod_temucraft_guild_chat` (
     `text`         VARCHAR(255) NOT NULL DEFAULT '',
     `time`         INT UNSIGNED NOT NULL,
     PRIMARY KEY (`id`),
-    KEY `guild_time` (`guild`, `time`),
     KEY `guild_id` (`guild`, `id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

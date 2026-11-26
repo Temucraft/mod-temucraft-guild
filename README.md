@@ -2,7 +2,7 @@
 
 The server half of the Temucraft guild window and guild bank (the client half is `TemucraftGuild.lua` and
 `TemucraftGuildBank.lua` in [mod-temucraft-client-version](https://github.com/Temucraft/mod-temucraft-client-version)).
-It keeps, in the characters DB and forever:
+It keeps, in the characters DB (for a set number of days each, see Retention):
 
 - **Guild chat**: every guild and officer chat line players write (`mod_temucraft_guild_chat`). The guild window
   shows the history with timestamps (pages of `PageSize` lines, "Load older messages" for more); after logging in the
@@ -45,6 +45,21 @@ with `.rbac account grant <account> 104251`.
 | `Temucraft.Guild.News.Enable` | 1 | guild news |
 | `Temucraft.Guild.News.Achievements` / `.Items` | 1 | achievements / items are news |
 | `Temucraft.Guild.News.MinItemQuality` | 4 | lowest item quality that is news (heirlooms never) |
+| `Temucraft.Guild.KeepDays.Chat` | 90 | days a guild chat line is kept (0 = forever) |
+| `Temucraft.Guild.KeepDays.BankLog` | 180 | days a guild bank log entry is kept (0 = forever) |
+| `Temucraft.Guild.KeepDays.EventLog` | 180 | days a guild log entry is kept (0 = forever) |
+| `Temucraft.Guild.KeepDays.News` | 365 | days a guild news entry is kept (0 = forever) |
+| `Temucraft.Guild.Prune.BatchSize` | 5000 | rows per delete batch (one batch a second) |
+
+## Retention
+
+At startup and once a day, rows older than their `KeepDays` are deleted. When a guild is disbanded all its rows are
+deleted, and at startup the rows of guilds that no longer exist (disbanded while the module was off). The deletes go
+to the database as queued batches of `Prune.BatchSize` rows, one a second: old rows are found by a binary search on
+the primary key (rows are added in time order) and deleted by id range with `time < cutoff` in every statement, so a
+newer row is never touched and there is no table scan. A disbanded guild's rows are deleted up to the highest id it
+had, so a new guild that gets the same id after a restart keeps its own rows. The startup copy of the stock logs skips
+entries older than the keep window. `.reload config` applies new keep days at once.
 
 ## The client's messages
 
@@ -59,7 +74,7 @@ clock on the player's computer doesn't matter.
   (`Guild::BroadcastToGuild` directly) is not stored, nor are addon messages.
 - The startup copy of the stock logs matches entries on guild, tab, time, type, player, item and count: two
   identical entries in the same second before this module was installed are copied once.
-- Nothing is ever deleted, also not when a guild disbands; delete rows by `guild` by hand if you need to.
+- A row a few seconds out of time order (added by the startup copy) can stay up to a day longer than its keep days.
 
 ## Independence
 

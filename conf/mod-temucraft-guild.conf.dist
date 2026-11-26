@@ -5,8 +5,8 @@
 ########################################
 #
 #    Temucraft.Guild.ChatHistory.Enable
-#        Description: Keep every guild and officer chat line (characters DB, mod_temucraft_guild_chat, forever) and
-#                     send it to the Temucraft guild window.
+#        Description: Keep every guild and officer chat line (characters DB, mod_temucraft_guild_chat, for
+#                     Temucraft.Guild.KeepDays.Chat days) and send it to the Temucraft guild window.
 #        Default:     1
 
 Temucraft.Guild.ChatHistory.Enable = 1
@@ -29,7 +29,8 @@ Temucraft.Guild.ChatHistory.PageSize = 50
 #
 #    Temucraft.Guild.BankLogArchive.Enable
 #        Description: Copy every guild bank log entry and guild event log entry into mod_temucraft_guild_bank_log
-#                     and mod_temucraft_guild_event_log (forever; the core keeps the last 25 per tab), and show them
+#                     and mod_temucraft_guild_event_log (for KeepDays.BankLog / .EventLog days; the core keeps the
+#                     last 25 per tab), and show them
 #                     in the guild bank's Log / Money Log and the guild window's Info tab.
 #        Default:     1
 
@@ -58,3 +59,27 @@ Temucraft.Guild.News.Items = 1
 #        Default:     4
 
 Temucraft.Guild.News.MinItemQuality = 4
+
+#
+#    Temucraft.Guild.KeepDays.Chat
+#    Temucraft.Guild.KeepDays.BankLog
+#    Temucraft.Guild.KeepDays.EventLog
+#    Temucraft.Guild.KeepDays.News
+#        Description: Days the guild chat history, the guild bank log archive, the guild log archive and the guild
+#                     news keep a row. Older rows are deleted at startup and once a day (in batches, see below).
+#                     0 = keep forever. A disbanded guild's rows are always deleted (and at startup those of guilds
+#                     that no longer exist).
+#        Default:     90, 180, 180, 365
+
+Temucraft.Guild.KeepDays.Chat = 90
+Temucraft.Guild.KeepDays.BankLog = 180
+Temucraft.Guild.KeepDays.EventLog = 180
+Temucraft.Guild.KeepDays.News = 365
+
+#
+#    Temucraft.Guild.Prune.BatchSize
+#        Description: Rows per delete batch (100-100000); one batch goes to the database each second, so the
+#                     character saves never wait behind a big delete.
+#        Default:     5000
+
+Temucraft.Guild.Prune.BatchSize = 5000

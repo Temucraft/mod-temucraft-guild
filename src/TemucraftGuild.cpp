@@ -6,10 +6,10 @@
  */
 
 /*
- * mod-temucraft-guild: what the retail-style guild window and guild bank of the Temucraft client show, kept forever.
+ * mod-temucraft-guild: what the retail-style guild window and guild bank of the Temucraft client show.
  *
  *   - Guild chat history: every guild and officer chat line (players' own, not addon messages) goes into
- *     mod_temucraft_guild_chat (characters DB) and stays there. The client asks for it when the guild window opens
+ *     mod_temucraft_guild_chat (characters DB) for KeepDays.Chat days. The client asks for it when the guild window opens
  *     (pages of PageSize lines, older pages on request) and gets the last LoginLines lines after logging in. Officer
  *     lines only go to members whose rank may listen to officer chat, guild lines only to those who may listen to
  *     guild chat.
@@ -36,6 +36,11 @@
  * GM command: .temucraft guildchat <guild name or id> [lines] (RBAC 104251) shows a guild's stored chat, officer
  * lines included.
  *
+ * Retention: rows older than Temucraft.Guild.KeepDays.Chat / .BankLog / .EventLog / .News days (0 = keep forever)
+ * are deleted at startup and once a day, and all rows of a guild when it is disbanded (and, at startup, of guilds
+ * that no longer exist). The deletes go to the database in batches of Prune.BatchSize rows, one batch a second, by
+ * primary key range (old rows are the lowest ids), so neither the world thread nor the character saves wait on them.
+ *
  * Nothing here blocks the world thread: inserts are asynchronous Executes, reads are asynchronous queries answered
  * through the session's query processor.
  */
@@ -61,6 +66,7 @@
 #include "WorldScript.h"
 #include "WorldSession.h"
 #include <algorithm>
+#include <deque>
 #include <functional>
 #include <map>
 #include <string>
@@ -85,7 +91,22 @@ namespace
         bool newsAchievements = true;
         bool newsItems = true;
         uint32 newsMinQuality = ITEM_QUALITY_EPIC;
+        uint32 keepChat = 90, keepBankLog = 180, keepEventLog = 180, keepNews = 365;   // days, 0 = forever
+        uint32 pruneBatch = 5000;
     } cfg;
+
+    // the four archive tables and how long each keeps its rows
+    struct Archive { char const* table; uint32 Settings::* keep; };
+    constexpr Archive ARCHIVES[] = {
+        { "mod_temucraft_guild_chat", &Settings::keepChat },
+        { "mod_temucraft_guild_bank_log", &Settings::keepBankLog },
+        { "mod_temucraft_guild_event_log", &Settings::keepEventLog },
+        { "mod_temucraft_guild_news", &Settings::keepNews },
+    };
+    constexpr uint32 PRUNE_EVERY = 24 * HOUR * IN_MILLISECONDS;
+    constexpr uint32 BATCH_EVERY = 1 * IN_MILLISECONDS;
+    std::deque<std::string> pending;   // DELETE statements still to send, one per BATCH_EVERY
+    bool started = false;
 
     // mod-temucraft-guild-perks' perk list (world DB), read at startup when the table exists
     struct PerkDef { std::string name; uint32 spell = 0; bool allowed = true, unlocked = true, enabled = true; };
@@ -128,6 +149,95 @@ namespace
         cfg.newsAchievements = sConfigMgr->GetOption<bool>("Temucraft.Guild.News.Achievements", true);
         cfg.newsItems = sConfigMgr->GetOption<bool>("Temucraft.Guild.News.Items", true);
         cfg.newsMinQuality = sConfigMgr->GetOption<uint32>("Temucraft.Guild.News.MinItemQuality", ITEM_QUALITY_EPIC);
+        cfg.keepChat = sConfigMgr->GetOption<uint32>("Temucraft.Guild.KeepDays.Chat", 90);
+        cfg.keepBankLog = sConfigMgr->GetOption<uint32>("Temucraft.Guild.KeepDays.BankLog", 180);
+        cfg.keepEventLog = sConfigMgr->GetOption<uint32>("Temucraft.Guild.KeepDays.EventLog", 180);
+        cfg.keepNews = sConfigMgr->GetOption<uint32>("Temucraft.Guild.KeepDays.News", 365);
+        cfg.pruneBatch = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Temucraft.Guild.Prune.BatchSize", 5000), 100, 100000);
+    }
+
+    // the oldest time a row of a table keeps (0: keep everything)
+    uint32 Cutoff(uint32 days)
+    {
+        if (!days)
+            return 0;
+        uint64 const span = uint64(days) * DAY;
+        uint32 const now = Now();
+        return now > span ? uint32(now - span) : 0;
+    }
+
+    // the first row at or after an id: (id, time), or false past the end. A primary key lookup.
+    bool RowAt(char const* table, uint64 id, uint64& rowId, uint32& rowTime)
+    {
+        QueryResult r = CharacterDatabase.Query("SELECT `id`, `time` FROM `{}` WHERE `id` >= {} ORDER BY `id` LIMIT 1", table, id);
+        if (!r)
+            return false;
+        rowId = r->Fetch()[0].Get<uint64>();
+        rowTime = r->Fetch()[1].Get<uint32>();
+        return true;
+    }
+
+    // queues the deletes of a table's rows older than cutoff. Rows are added in time order, so the old ones are the
+    // lowest ids: a binary search on the primary key finds the last old id (about 40 key lookups, no table scan),
+    // then the range goes in batches of pruneBatch ids. "time < cutoff" stays in every batch, so a newer row is never
+    // deleted; an old row with a higher id than the boundary goes at a later run.
+    void QueuePrune(char const* table, uint32 cutoff)
+    {
+        uint64 lo = 0, rowId = 0;
+        uint32 rowTime = 0;
+        if (!cutoff || !RowAt(table, 0, rowId, rowTime) || rowTime >= cutoff)
+            return;
+        lo = rowId;
+        QueryResult top = CharacterDatabase.Query("SELECT MAX(`id`) FROM `{}`", table);
+        uint64 hi = top ? top->Fetch()[0].Get<uint64>() : lo;
+        uint64 const first = lo;
+        while (lo < hi)
+        {
+            uint64 const mid = lo + (hi - lo + 1) / 2;
+            if (RowAt(table, mid, rowId, rowTime) && rowTime < cutoff)
+                lo = rowId;
+            else
+                hi = mid - 1;
+        }
+        for (uint64 from = first; from <= lo; from += cfg.pruneBatch)
+            pending.push_back(Acore::StringFormat("DELETE FROM `{}` WHERE `id` BETWEEN {} AND {} AND `time` < {}", table, from,
+                std::min<uint64>(from + cfg.pruneBatch - 1, lo), cutoff));
+    }
+
+    // queues the deletes of every row of a guild that is gone, up to the highest id it has now (a new guild that gets
+    // the same id after a restart keeps its own rows)
+    void QueueGuildDelete(uint32 guildId)
+    {
+        for (Archive const& a : ARCHIVES)
+        {
+            QueryResult r = CharacterDatabase.Query("SELECT COUNT(*), IFNULL(MAX(`id`), 0) FROM `{}` WHERE `guild` = {}", a.table, guildId);
+            if (!r)
+                continue;
+            uint64 const count = r->Fetch()[0].Get<uint64>(), maxId = r->Fetch()[1].Get<uint64>();
+            for (uint64 done = 0; done < count; done += cfg.pruneBatch)
+                pending.push_back(Acore::StringFormat("DELETE FROM `{}` WHERE `guild` = {} AND `id` <= {} LIMIT {}", a.table, guildId, maxId, cfg.pruneBatch));
+        }
+    }
+
+    // startup and once a day: old rows, and rows of guilds that no longer exist
+    void Prune(bool orphans)
+    {
+        size_t const before = pending.size();
+        for (Archive const& a : ARCHIVES)
+            QueuePrune(a.table, Cutoff(cfg.*a.keep));
+        uint32 gone = 0;
+        if (orphans)
+            for (Archive const& a : ARCHIVES)
+                if (QueryResult r = CharacterDatabase.Query("SELECT DISTINCT t.`guild` FROM `{}` t LEFT JOIN `guild` g ON g.`guildid` = t.`guild` "
+                    "WHERE g.`guildid` IS NULL", a.table))
+                    do
+                    {
+                        QueueGuildDelete(r->Fetch()[0].Get<uint32>());
+                        ++gone;
+                    } while (r->NextRow());
+        if (pending.size() > before)
+            LOG_INFO("module", "{}: {} delete batch(es) queued (rows older than chat {} / bank log {} / guild log {} / news {} days, 0 = kept; "
+                "{} guild(s) no longer there).", MODULE, pending.size() - before, cfg.keepChat, cfg.keepBankLog, cfg.keepEventLog, cfg.keepNews, gone);
     }
 
     void LoadPerks()
@@ -151,7 +261,8 @@ namespace
         perkStateTable = CharacterDatabase.Query("SHOW TABLES LIKE 'mod_temucraft_guild_perk_state'") != nullptr;
     }
 
-    // the stock logs' entries the archive doesn't have yet (from before this module, or while it was off)
+    // the stock logs' entries the archive doesn't have yet (from before this module, or while it was off), within the
+    // keep window (older ones would only be deleted again)
     void SeedArchives()
     {
         if (!cfg.bankArchive)
@@ -162,14 +273,15 @@ namespace
             "FROM `guild_bank_eventlog` g LEFT JOIN `characters` c ON c.`guid` = g.`PlayerGuid` "
             "WHERE NOT EXISTS (SELECT 1 FROM `mod_temucraft_guild_bank_log` a WHERE a.`guild` = g.`guildid` AND a.`tab` = g.`TabId` "
             "AND a.`time` = g.`TimeStamp` AND a.`type` = g.`EventType` AND a.`player` = g.`PlayerGuid` AND a.`item_or_money` = g.`ItemOrMoney` "
-            "AND a.`count` = g.`ItemStackCount`) ORDER BY g.`TimeStamp`, g.`LogGuid`");
+            "AND a.`count` = g.`ItemStackCount`) AND g.`TimeStamp` >= {} ORDER BY g.`TimeStamp`, g.`LogGuid`", Cutoff(cfg.keepBankLog));
         CharacterDatabase.Execute(
             "INSERT INTO `mod_temucraft_guild_event_log` (`guild`, `type`, `player1`, `name1`, `class1`, `player2`, `name2`, `class2`, `new_rank`, `time`) "
             "SELECT g.`guildid`, g.`EventType`, g.`PlayerGuid1`, IFNULL(c1.`name`, ''), IFNULL(c1.`class`, 0), g.`PlayerGuid2`, IFNULL(c2.`name`, ''), "
             "IFNULL(c2.`class`, 0), g.`NewRank`, g.`TimeStamp` "
             "FROM `guild_eventlog` g LEFT JOIN `characters` c1 ON c1.`guid` = g.`PlayerGuid1` LEFT JOIN `characters` c2 ON c2.`guid` = g.`PlayerGuid2` "
             "WHERE NOT EXISTS (SELECT 1 FROM `mod_temucraft_guild_event_log` a WHERE a.`guild` = g.`guildid` AND a.`time` = g.`TimeStamp` "
-            "AND a.`type` = g.`EventType` AND a.`player1` = g.`PlayerGuid1` AND a.`player2` = g.`PlayerGuid2`) ORDER BY g.`TimeStamp`, g.`LogGuid`");
+            "AND a.`type` = g.`EventType` AND a.`player1` = g.`PlayerGuid1` AND a.`player2` = g.`PlayerGuid2`) AND g.`TimeStamp` >= {} "
+            "ORDER BY g.`TimeStamp`, g.`LogGuid`", Cutoff(cfg.keepEventLog));
     }
 
     // a character's name and class from the cache (the player may be offline or deleted)
@@ -477,7 +589,7 @@ public:
         return false;
     }
 
-    // guild and officer chat, kept forever (only what the core will broadcast: the speaker may speak there)
+    // guild and officer chat, kept KeepDays.Chat days (only what the core will broadcast: the speaker may speak there)
     bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 language, std::string& msg, Guild* guild) override
     {
         if (!cfg.chat || !player || !guild || language == LANG_ADDON || msg.empty())
@@ -520,7 +632,14 @@ private:
 class TemucraftGuild_Guild : public GuildScript
 {
 public:
-    TemucraftGuild_Guild() : GuildScript("TemucraftGuild_Guild", { GUILDHOOK_ON_EVENT, GUILDHOOK_ON_BANK_EVENT }) { }
+    TemucraftGuild_Guild() : GuildScript("TemucraftGuild_Guild", { GUILDHOOK_ON_EVENT, GUILDHOOK_ON_BANK_EVENT, GUILDHOOK_ON_DISBAND }) { }
+
+    // a disbanded guild's chat, logs and news go with it (in batches)
+    void OnDisband(Guild* guild) override
+    {
+        if (guild)
+            QueueGuildDelete(guild->GetId());
+    }
 
     // every bank log entry the core writes (it keeps the last 25 per tab), into the archive
     void OnBankEvent(Guild* guild, uint8 eventType, uint8 tabId, ObjectGuid::LowType playerGuid, uint32 itemOrMoney, uint16 itemStackCount, uint8 destTabId) override
@@ -565,21 +684,57 @@ public:
 class TemucraftGuild_World : public WorldScript
 {
 public:
-    TemucraftGuild_World() : WorldScript("TemucraftGuild_World", { WORLDHOOK_ON_AFTER_CONFIG_LOAD, WORLDHOOK_ON_STARTUP }) { }
+    TemucraftGuild_World() : WorldScript("TemucraftGuild_World", { WORLDHOOK_ON_AFTER_CONFIG_LOAD, WORLDHOOK_ON_STARTUP, WORLDHOOK_ON_UPDATE }) { }
 
     void OnAfterConfigLoad(bool reload) override
     {
         LoadSettings();
         if (reload)
+        {
             LoadPerks();
+            if (started)
+                Prune(false);   // new keep days apply now (a row already queued is deleted anyway)
+        }
     }
 
     void OnStartup() override
     {
         LoadPerks();
         SeedArchives();
+        Prune(true);
+        started = true;
         LOG_INFO("server.loading", "{}: chat history {}, bank log archive {}, {} guild perks shown.", MODULE,
             cfg.chat ? "on" : "off", cfg.bankArchive ? "on" : "off", perks.size());
+    }
+
+    // one queued delete batch a second; the old rows again once a day
+    void OnUpdate(uint32 diff) override
+    {
+        _prune.Update(diff);
+        if (_prune.Passed())
+        {
+            _prune.Reset();
+            Prune(false);
+        }
+        if (pending.empty())
+            return;
+        _batch.Update(diff);
+        if (!_batch.Passed())
+            return;
+        _batch.Reset();
+        CharacterDatabase.Execute(pending.front());
+        pending.pop_front();
+    }
+
+private:
+    IntervalTimer _prune = MakeTimer(PRUNE_EVERY);
+    IntervalTimer _batch = MakeTimer(BATCH_EVERY);
+
+    static IntervalTimer MakeTimer(uint32 ms)
+    {
+        IntervalTimer t;
+        t.SetInterval(ms);
+        return t;
     }
 };
 
