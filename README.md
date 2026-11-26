@@ -61,6 +61,10 @@ newer row is never touched and there is no table scan. A disbanded guild's rows 
 had, so a new guild that gets the same id after a restart keeps its own rows. The startup copy of the stock logs skips
 entries older than the keep window. `.reload config` applies new keep days at once.
 
+The unused `guild_time` index on `mod_temucraft_guild_chat` is gone (every read is by guild and id, served by
+`guild_id`). `data/sql/db-characters/base/mod_temucraft_guild_retention.sql` drops it on a server that still has it
+and deletes the rows of guilds that no longer exist; it is safe to run again.
+
 ## The client's messages
 
 Addon messages with the prefix `TGD`, whispered to oneself (`AddonChannel = 1`, the default). The client asks
